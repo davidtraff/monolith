@@ -1,18 +1,9 @@
-FROM rust
-
+FROM rustlang/rust:nightly as builder
 WORKDIR /usr/local/src/
-RUN curl -s https://api.github.com/repos/y2z/monolith/releases/latest \
-| grep "tarball_url.*\"," \
-| cut -d '"' -f 4 \
-| wget -qi - -O monolith.tar.gz
+COPY . .
+RUN cargo install --path .
 
-RUN tar xfz monolith.tar.gz \
-&& mv Y2Z-monolith-* monolith \
-&& rm monolith.tar.gz
+FROM debian:buster-slim
+COPY --from=builder /usr/local/cargo/bin/monolith /usr/local/bin/monolith
 
-WORKDIR /usr/local/src/monolith
-RUN ls -a
-RUN make install
-
-WORKDIR /tmp
-CMD ["/usr/local/cargo/bin/monolith"]
+CMD ["monolith"]

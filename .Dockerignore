@@ -1,0 +1,11 @@
+target
+.vscode
+snap
+docs
+LICENSE
+README.MD
+Makefile
+.travis.yml
+.gitignore
+.appveyor.yml
+.adr-dir
