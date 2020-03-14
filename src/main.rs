@@ -1,81 +1,65 @@
+#![feature(proc_macro_hygiene, decl_macro)]
+
+#[macro_use] extern crate rocket;
+
 #[macro_use]
 extern crate clap;
 
-mod args;
 mod macros;
 
-use crate::args::AppArgs;
 use monolith::html::{html_to_dom, stringify_document, walk_and_embed_assets};
 use monolith::http::retrieve_asset;
 use monolith::utils::{data_url_to_text, is_data_url, is_http_url};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, Error, Write};
 use std::process;
 use std::time::Duration;
+use rocket::response::status::BadRequest;
+use rocket::response::content::Content;
+use rocket::http::ContentType;
 
-enum Output {
-    Stdout(io::Stdout),
-    File(File),
+fn fmt_err(result: String) -> Result<Content<String>, BadRequest<String>> {
+    Err(BadRequest(Some(result)))
 }
 
-impl Output {
-    fn new(file_path: &str) -> Result<Output, Error> {
-        if file_path.is_empty() {
-            Ok(Output::Stdout(io::stdout()))
-        } else {
-            Ok(Output::File(File::create(file_path)?))
-        }
+#[get("/?<target_url>&<timeout>&<insecure>&<no_js>&<no_images>&<no_frames>&<no_css>")]
+fn index(
+    target_url: Option<String>,
+    timeout: Option<u64>,
+    insecure: Option<bool>,
+    no_js: Option<bool>,
+    no_images: Option<bool>,
+    no_frames: Option<bool>,
+    no_css: Option<bool>
+) -> Result<Content<String>, BadRequest<String>> {
+    let target_url = &target_url.unwrap_or(String::from(""));
+
+    if !is_http_url(&target_url) && !is_data_url(&target_url) {
+        return fmt_err(format!("Only HTTP(S) or data URLs are supported but got: {}", &target_url));
     }
-
-    fn writeln_str(&mut self, s: &str) -> Result<(), Error> {
-        match self {
-            Output::Stdout(stdout) => {
-                writeln!(stdout, "{}", s)?;
-                stdout.flush()
-            }
-            Output::File(f) => {
-                writeln!(f, "{}", s)?;
-                f.flush()
-            }
-        }
-    }
-}
-
-fn main() {
-    let app_args = AppArgs::get();
-    let target_url: &str = app_args.url_target.as_str();
-    let base_url;
-    let dom;
-
-    if !is_http_url(target_url) && !is_data_url(target_url) {
-        eprintln!(
-            "Only HTTP(S) or data URLs are supported but got: {}",
-            &target_url
-        );
-        process::exit(1);
-    }
-
-    let mut output = Output::new(&app_args.output).expect("Could not prepare output");
 
     // Initialize client
     let mut cache = HashMap::new();
     let mut header_map = HeaderMap::new();
+    let base_url;
+    let dom;
+
     header_map.insert(
         USER_AGENT,
-        HeaderValue::from_str(&app_args.user_agent).expect("Invalid User-Agent header specified"),
+        HeaderValue::from_str("Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:73.0) Gecko/20100101 Firefox/73.0").unwrap(),
     );
 
-    let timeout: u64 = if app_args.timeout > 0 {
-        app_args.timeout
+    let timeout = timeout.unwrap_or(0);
+    let timeout: u64 = if timeout > 0 {
+        timeout
     } else {
         std::u64::MAX / 4
     };
+
     let client = Client::builder()
         .timeout(Duration::from_secs(timeout))
-        .danger_accept_invalid_certs(app_args.insecure)
+        .danger_accept_invalid_certs(insecure.unwrap_or(false))
         .default_headers(header_map)
         .build()
         .expect("Failed to initialize HTTP client");
@@ -83,7 +67,7 @@ fn main() {
     // Retrieve root document
     if is_http_url(target_url) {
         let (data, final_url) =
-            retrieve_asset(&mut cache, &client, target_url, false, "", app_args.silent)
+            retrieve_asset(&mut cache, &client, target_url, false, "", true)
                 .expect("Could not retrieve assets in HTML");
         base_url = final_url;
         dom = html_to_dom(&data);
@@ -91,14 +75,13 @@ fn main() {
         let text: String = data_url_to_text(target_url);
 
         if text.len() == 0 {
-            eprintln!("Unsupported data URL input");
-            process::exit(1);
+            return fmt_err(String::from("Unsupported data URL input"));
         }
 
         base_url = str!();
         dom = html_to_dom(&text);
     } else {
-        process::exit(1);
+        return fmt_err(String::from("Invalid response"));
     }
 
     walk_and_embed_assets(
@@ -106,23 +89,25 @@ fn main() {
         &client,
         &base_url,
         &dom.document,
-        app_args.no_css,
-        app_args.no_js,
-        app_args.no_images,
-        app_args.silent,
-        app_args.no_frames,
+        no_css.unwrap_or(false),
+        no_js.unwrap_or(false),
+        no_images.unwrap_or(false),
+        true,
+        no_frames.unwrap_or(false),
     );
 
     let html: String = stringify_document(
         &dom.document,
-        app_args.no_css,
-        app_args.no_frames,
-        app_args.no_js,
-        app_args.no_images,
-        app_args.isolate,
+        no_css.unwrap_or(false),
+        no_frames.unwrap_or(false),
+        no_js.unwrap_or(false),
+        no_images.unwrap_or(false),
+        true,
     );
 
-    output
-        .writeln_str(&html)
-        .expect("Could not write HTML output");
+    Ok(Content(ContentType::HTML, html))
+}
+
+fn main() {
+    rocket::ignite().mount("/", routes![index]).launch();
 }
